@@ -1,0 +1,61 @@
+.TH FFP-COMPILER 1 "August 2025" "v1.3" "User Commands"
+.SH NAME
+ffp-compiler \- Optimized FFP package builder for ZyXEL NSA320
+.SH SYNOPSIS
+.B ffp-compiler
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B ffp-compiler
+is a tool for building and managing FFP (fonz fun_plug) packages on ARMv5 (ZyXEL NSA320).
+It supports source management, building, logging, and publishing into a repository.
+.SH OPTIONS
+.TP
+.BR --package " <name>"
+Package name to build.
+.TP
+.BR --pkg-version " <ver>"
+Specific package version.
+.TP
+.BR --jobs " <N>"
+Number of parallel jobs (passed to make -jN).
+.TP
+.BR --list
+List all available packages.
+.TP
+.BR --info " <pkg>"
+Show detailed information about a package.
+.TP
+.BR --system-info
+Show system and environment information.
+.TP
+.BR --publish
+Publish package into the release repository.
+.TP
+.BR --versions " <pkg>"
+List all available versions for a package.
+.TP
+.BR --autoretry
+Retry the build process on failure.
+.TP
+.BR --failexit
+Exit immediately on the first error.
+.TP
+.BR --dry-run
+Simulate build without performing compilation.
+.TP
+.BR -v ", " --version
+Show program version.
+.TP
+.BR -h ", " --help
+Show help.
+.SH EXAMPLES
+Build package mc:
+.nf
+ffp-compiler --package mc
+.fi
+Build a specific version:
+.nf
+ffp-compiler --package mc --pkg-version 4.8.33
+.fi
+.SH AUTHOR
+PhateValleyman (Jonas.Ned@outlook.com)

@@ -1,1 +1,33 @@
-404: Not Found
+# Build artifacts
+work/
+logs/
+destdir/
+release/
+temp/
+distfiles/
+
+# System & cache
+*.log
+*.bak
+*.tmp
+*.swp
+*~
+.cache/
+
+# Package manager files
+node_modules/
+vendor/
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python cache (if definitions use python scripts)
+__pycache__/
+*.pyc
+*.pyo
