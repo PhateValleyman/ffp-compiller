@@ -1,0 +1,8 @@
+#!/ffp/bin/sh
+
+export PN=php
+export PV=7.0.0
+export PR=1
+export SRC_URI="http://some.where/with/template-$PV.tar.gz"
+export CONFIGURE_ARGS="--prefix=/ffp --enable-re2c-cgoto=shared,/ffp --with-apxs2=/ffp/opt/apache-2.2.29-worker/bin/apxs --enable-fpm --with-config-file-path=/ffp/etc/php.ini --with-config-file-scan-dir=/ffp/etc --with-libxml-dir=/ffp --with-openssl=shared,/ffp --with-pcre-regex=/ffp --with-zlib=shared,/ffp --enable-bcmath --with-bz2=shared,/ffp --enable-calendar --with-curl=shared,/ffp --with-enchant=shared,/ffp --enable-exif --enable-ftp --with-gd=shared,/ffp --with-jpeg-dir=/ffp --with-png-dir=/ffp --with-freetype-dir=/ffp --enable-gd-native-ttf --enable-gd-jis-conv --with-gettext=shared,/ffp --with-gmp=shared,/ffp --with-mhash=shared,/ffp --enable-intl --with-icu-dir=/ffp --enable-mbstring --with-mcrypt=shared,/ffp --with-mysql-sock=/ffp/var/run/mysql/mysql.sock --with-mysqli=shared,/ffp/bin/mysql_config --enable-opcache --enable-pcntl --with-pdo-mysql=shared,/ffp --with-readline=shared,/ffp --enable-shmop --enable-soap --enable-sockets --enable-wddx --with-libexpat-dir=/ffp --with-xmlrpc=shared,/ffp --with-iconv=shared,/ffp --with-xsl=/ffp --enable-zip --with-pear --with-pcre-dir=/ffp --with-openssl-dir=/ffp --with-zlib-dir=/ffp --with-iconv-dir=/ffp --with-webp-dir=/ffp --enable-opcache-file"
+export COMMANDS="func_init_pkg_work_dir func_download_distfile func_unpack_distfile func_patch func_configure func_make func_make_install func_dir_ffp func_dir_install func_makepkg"

@@ -1,0 +1,59 @@
+#!/ffp/bin/bash
+# ==============================================================================
+# NCurses FFP Patch Script
+# Adapts build scripts and configuration for FFP environment
+# ==============================================================================
+
+set -euo pipefail
+
+# Export required environment variables for ncurses build
+export SHELL="/ffp/bin/sh"
+export CPPFLAGS="${CPPFLAGS:-} -D_XOPEN_SOURCE_EXTENDED"
+
+# Clear TERMINFO to avoid conflicts during build
+unset TERMINFO 2>/dev/null || true
+
+echo "Patching ncurses for FFP environment..."
+
+# Function to patch shebang lines in files
+patch_shebangs() {
+    local pattern="$1"
+    local description="$2"
+    
+    echo "Patching $description files..."
+    
+    # Patch shell scripts
+    find . -type f -name "$pattern" -exec sed -i -r 's|^#!/bin/sh|#!/ffp/bin/sh|' {} \;
+    find . -type f -name "$pattern" -exec sed -i -r 's|^#!/bin/bash|#!/ffp/bin/bash|' {} \;
+    find . -type f -name "$pattern" -exec sed -i -r 's|^#!/usr/bin/env|#!/ffp/bin/env|' {} \;
+    
+    # Patch Python scripts
+    find . -type f -name "$pattern" -exec sed -i -r 's|^#!/usr/bin/python|#!/ffp/bin/python|' {} \;
+    find . -type f -name "$pattern" -exec sed -i -r 's|^#!/bin/python|#!/ffp/bin/python|' {} \;
+    find . -type f -name "$pattern" -exec sed -i -r 's|^#!/bin/env|#!/ffp/bin/env|' {} \;
+    
+    # Patch Perl scripts
+    find . -type f -name "$pattern" -exec sed -i -r 's|^#!/usr/bin/perl|#!/ffp/bin/perl|' {} \;
+    find . -type f -name "$pattern" -exec sed -i -r 's|^#!/bin/perl|#!/ffp/bin/perl|' {} \;
+}
+
+# Patch different types of configuration and build files
+patch_shebangs "config.*" "configuration"
+patch_shebangs "configure*" "configure"
+patch_shebangs "*.py*" "Python"
+patch_shebangs "*.pl*" "Perl"
+
+# Patch all executable files
+echo "Patching executable files..."
+find . -type f -executable -exec sed -i -r 's|^#!/bin/sh|#!/ffp/bin/sh|' {} \;
+find . -type f -executable -exec sed -i -r 's|^#!/bin/bash|#!/ffp/bin/bash|' {} \;
+find . -type f -executable -exec sed -i -r 's|^#!/usr/bin/env|#!/ffp/bin/env|' {} \;
+
+# Fix libtool library search paths for FFP
+echo "Patching libtool configuration..."
+if [[ -f configure ]]; then
+    # Correct run-time system search path for libraries in libtool
+    sed -i '/\$lt_ld_extra/c\    sys_lib_dlsearch_path_spec="/ffp/lib $lt_ld_extra"' configure
+fi
+
+echo "FFP patching completed successfully"

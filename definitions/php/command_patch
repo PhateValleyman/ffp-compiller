@@ -1,0 +1,7 @@
+# cat mysql/command_patch
+cd $E
+# Patch against Bug 62769: http://bugs.mysql.com/bug.php?id=62769
+patch -p0 < $X/sqlite3.patch
+patch -p0 < $X/001_configure.in.patcx
+patch -p0 < $X/002_php_crypt_r.c.patcx
+patch -p0 < $X/003_php_crypt_r.c.patch

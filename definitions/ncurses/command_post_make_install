@@ -1,0 +1,99 @@
+#!/ffp/bin/bash
+# ==============================================================================
+# NCurses Post-Installation Script
+# Creates compatibility symlinks and performs final package preparations
+# ==============================================================================
+
+set -euo pipefail
+
+echo "Performing ncurses post-installation tasks..."
+
+# Create compatibility symlinks for packages that link to non-wide-character libraries
+echo "Creating compatibility symlinks for libraries..."
+cd "$D/ffp/lib"
+
+# Create symlinks for main ncurses libraries
+for lib in ncurses ncurses++ form panel menu; do
+    echo "  Creating symlinks for lib${lib}..."
+    
+    # Static library links
+    if [[ -f "lib${lib}w.a" ]]; then
+        ln -sf "lib${lib}w.a" "lib${lib}.a"
+    fi
+    
+    # Shared library links
+    if [[ -f "lib${lib}w.so" ]]; then
+        ln -sf "lib${lib}w.so" "lib${lib}.so"
+    fi
+    
+    # Versioned shared library links
+    for so_ver in so.6 so.6.5; do
+        if [[ -f "lib${lib}w.$so_ver" ]]; then
+            ln -sf "lib${lib}w.$so_ver" "lib${lib}.$so_ver"
+        fi
+    done
+done
+
+# Create compatibility symlinks for pkg-config files
+echo "Creating compatibility symlinks for pkg-config files..."
+cd "$D/ffp/lib/pkgconfig"
+
+for lib in ncurses ncurses++ form panel menu; do
+    if [[ -f "${lib}w.pc" ]]; then
+        echo "  Creating pkg-config symlink for ${lib}..."
+        ln -sf "${lib}w.pc" "${lib}.pc"
+    fi
+done
+
+# Create compatibility symlinks for configuration scripts
+echo "Creating compatibility symlinks for config scripts..."
+cd "$D/ffp/bin"
+
+if [[ -f "ncursesw6-config" ]]; then
+    ln -sf "ncursesw6-config" "ncurses6-config"
+elif [[ -f "ncursesw5-config" ]]; then
+    ln -sf "ncursesw5-config" "ncurses5-config"
+fi
+
+# Create header file symlinks for compatibility
+echo "Creating header file symlinks..."
+cd "$D/ffp/include"
+
+# Create symlinks for ncursesw headers in main include directory
+if [[ -d "ncursesw" ]]; then
+    for header_file in ncursesw/*; do
+        if [[ -f "$header_file" ]]; then
+            header_name="$(basename "$header_file")"
+            echo "  Creating header symlink for $header_name..."
+            ln -sf "$header_file" "$header_name"
+        fi
+    done
+fi
+
+# Remove unnecessary documentation to reduce package size
+echo "Removing unnecessary documentation..."
+if [[ -d "$D/ffp/share/doc" ]]; then
+    rm -rf "$D/ffp/share/doc"
+fi
+
+# Set correct permissions for shared libraries and libtool files
+echo "Setting correct file permissions..."
+if [[ -d "$D/ffp/lib" ]]; then
+    # Set permissions for libtool archive files
+    find "$D/ffp/lib" -type f -name "*.la" -exec chmod 755 {} \;
+    
+    # Set permissions for shared object files
+    find "$D/ffp/lib" -type f -name "*.so*" -exec chmod 755 {} \;
+fi
+
+# Create terminfo database directory if it doesn't exist
+echo "Ensuring terminfo directory exists..."
+mkdir -p "$D/ffp/share/terminfo"
+
+# Fix any remaining shebang issues in installed scripts
+echo "Final shebang patching for installed files..."
+find "$D" -type f -executable -exec sed -i -r 's|^#!/bin/sh|#!/ffp/bin/sh|' {} \; 2>/dev/null || true
+find "$D" -type f -executable -exec sed -i -r 's|^#!/bin/bash|#!/ffp/bin/bash|' {} \; 2>/dev/null || true
+find "$D" -type f -executable -exec sed -i -r 's|^#!/usr/bin/env|#!/ffp/bin/env|' {} \; 2>/dev/null || true
+
+echo "NCurses post-installation completed successfully"

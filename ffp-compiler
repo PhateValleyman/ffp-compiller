@@ -1,0 +1,711 @@
+#!/ffp/bin/bash
+# ==============================================================================
+# ffp-compiler — Optimized FFP package builder for ZyXEL NSA320 (ARMv5TE)
+# v1.3 - Enhanced, Fixed, and Optimized
+# Based on original by PhateValleyman
+# ==============================================================================
+
+# Exit on any error, undefined variable, or pipe failure. Use '|| true' for expected errors.
+set -euo pipefail
+# Set the locale to 'C' for consistent sorting and behavior across different environments.
+export LC_ALL=C
+
+# --- Color Definitions for Terminal Output ---
+# Use tput to generate portable ANSI color codes.
+RED=$(tput setaf 1)    # For errors
+GREEN=$(tput setaf 2)  # For success
+YELLOW=$(tput setaf 3) # For warnings and information
+BLUE=$(tput setaf 4)   # For headings and status
+BOLD=$(tput bold)      # For emphasis
+RESET=$(tput sgr0)     # To reset text attributes
+
+# --- Script Metadata ---
+SCRIPT_VERSION="v1.3"
+SCRIPT_AUTHOR="by PhateValleyman"
+SCRIPT_CONTACT="Jonas.Ned@outlook.com"
+
+# --- Configuration Defaults (Can be overridden by environment variables) ---
+# Get the absolute path of the directory containing this script.
+DIR_ROOT="${DIR_ROOT:-"$(cd "$(dirname "$0")" && pwd)"}"
+DIR_CONFIG="${DIR_CONFIG:-"$DIR_ROOT/config"}"               # User-specific config and hooks
+DIR_DEFINITIONS="${DIR_DEFINITIONS:-"$DIR_ROOT/definitions"}" # Package build definitions
+DIR_DEST="${DIR_DEST:-"$DIR_ROOT/destdir"}"                  # Final built package storage
+DIR_LOGS="${DIR_LOGS:-"$DIR_ROOT/logs"}"                     # Build logs
+DIR_RELEASE="${DIR_RELEASE:-"$DIR_ROOT/release"}"            # Structured repository output
+DIR_TEMP="${DIR_TEMP:-"$DIR_ROOT/temp"}"                     # Temporary files
+DIR_WORK="${DIR_WORK:-"$DIR_ROOT/work"}"                     # Build directories
+DISTFILES_CACHE="${DISTFILES_CACHE:-"$DIR_ROOT/distfiles"}"  # Downloaded source archive cache
+REPO_SYNC_DIR="${REPO_SYNC_DIR:-"/ffp/packages"}"            # Target directory for 'publish'
+MAKE_JOBS="${MAKE_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)}" # Auto-detect cores, default to 2
+FFP_AUTOMODE="${FFP_AUTOMODE:-0}"    # If set to 1, run non-interactively
+FFP_AUTORETRY="${FFP_AUTORETRY:-0}"  # If set to 1, retry failed build steps
+FFP_FAILEXIT="${FFP_FAILEXIT:-0}"    # If set to 1, exit on first step failure
+FFP_DRYRUN="${FFP_DRYRUN:-0}"        # If set to 1, print steps instead of executing
+
+# --- FFP Environment Configuration ---
+# The prefix where FFP is installed on the build system.
+CPREFIX="/ffp"
+# The file containing the FFP version and architecture information.
+FFP_VERSION_FILE="$CPREFIX/etc/ffp-version"
+
+# --- Core Utility Functions ---
+
+# Print an error message to stderr and exit the script with a non-zero status.
+die() {
+    echo "${RED}${BOLD}ERROR:${RESET} $*" >&2
+    exit 1
+}
+
+# Print a warning message to stderr.
+warn() {
+    echo "${YELLOW}${BOLD}WARNING:${RESET} $*" >&2
+}
+
+# Generate a timestamp string in a consistent format: YYMMDD-HHMMSS.
+timestamp() {
+    date +"%y%m%d-%H%M%S"
+}
+
+# Create all necessary directories for the build environment.
+mkpaths() {
+    mkdir -p "$DIR_CONFIG" "$DIR_DEFINITIONS" "$DIR_DEST" "$DIR_LOGS" "$DIR_RELEASE" "$DIR_TEMP" "$DIR_WORK" "$DISTFILES_CACHE"
+}
+
+# Log a message to both the main log file and stderr with a timestamp and log level.
+log() {
+    local level="$1"
+    local message="$2"
+    local log_entry="$(timestamp) [$level] $message"
+    # Append to the main log file
+    echo "$log_entry" >> "$MAIN_LOG"
+    # Print to stderr with color based on level
+    case "$level" in
+        "ERROR") echo "${RED}$log_entry${RESET}" >&2 ;;
+        "WARN")  echo "${YELLOW}$log_entry${RESET}" >&2 ;;
+        "INFO")  echo "${BLUE}$log_entry${RESET}" >&2 ;;
+        "DEBUG") [[ "${DEBUG:-0}" -eq 1 ]] && echo "${GREEN}$log_entry${RESET}" >&2 ;;
+        *)       echo "$log_entry" >&2 ;;
+    esac
+}
+
+# Check if all essential system tools are available in the PATH.
+require_tools() {
+    local tools="wget tar md5sum sha256sum sha512sum make sed awk grep cut tr tee unzip patch nproc"
+    local missing_tools=""
+
+    for tool in $tools; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            missing_tools="$missing_tools $tool"
+        fi
+    done
+
+    if [[ -n "$missing_tools" ]]; then
+        die "Missing essential tools:$missing_tools"
+    fi
+}
+
+# Detect and set up the FFP build environment by parsing the version file.
+detect_ffp_env() {
+    [[ -f "$FFP_VERSION_FILE" ]] || die "Cannot find FFP version file: $FFP_VERSION_FILE. Is FFP installed?"
+
+    # Source the version file, removing any Windows carriage returns.
+    export $(grep -E '^[A-Z][A-Z0-9_]*=' "$FFP_VERSION_FILE" | tr -d '\r')
+
+    # Set the GNU build triplet based on the FFP architecture.
+    [[ "${FFP_ARCH:-}" != "" ]] || die "FFP_ARCH is not set in $FFP_VERSION_FILE."
+    case "$FFP_ARCH" in
+        arm)  GNU_BUILD="arm-ffp-linux-uclibcgnueabi" ;;
+        oarm) GNU_BUILD="arm-ffp-linux-uclibc" ;;
+        *)    die "Unsupported or unknown FFP_ARCH: $FFP_ARCH" ;;
+    esac
+
+    export GNU_BUILD
+    export GNU_HOST="$GNU_BUILD"
+    export GNU_TARGET="$GNU_BUILD"
+
+    # Extract the FFP version, defaulting to 0.7 if not found.
+    FFPVERSION="$(grep -E '^FFPVER=' "$FFP_VERSION_FILE" | cut -d= -f2 || true)"
+    FFPVERSION="${FFPVERSION:-0.7}"
+    export FFPVERSION
+    log INFO "Detected FFP $FFPVERSION on $FFP_ARCH architecture"
+}
+
+# Display system information including FFP environment and compiler flags.
+show_system_info() {
+    echo "${YELLOW}${BOLD}System Information:${RESET}"
+    echo "${BLUE}FFP Version:${RESET}      ${GREEN}${FFPVERSION}${RESET}"
+    echo "${BLUE}FFP Architecture:${RESET} ${GREEN}${FFP_ARCH}${RESET}"
+    echo "${BLUE}Build System:${RESET}     ${GREEN}${GNU_BUILD}${RESET}"
+    echo "${BLUE}Compiler CFLAGS:${RESET}"
+    echo "  ${GREEN}${FFP_CFLAGS}${RESET}"
+    echo "${BLUE}Compiler LDFLAGS:${RESET}"
+    echo "  ${GREEN}${FFP_LDFLAGS}${RESET}"
+    echo "${BLUE}Make Jobs:${RESET}        ${GREEN}${MAKE_JOBS}${RESET}"
+    echo "${BLUE}Script Version:${RESET}   ${GREEN}${SCRIPT_VERSION}${RESET}"
+    echo "${BLUE}Script Author:${RESET}    ${GREEN}${SCRIPT_AUTHOR}${RESET}"
+    echo "${BLUE}Contact:${RESET}          ${GREEN}${SCRIPT_CONTACT}${RESET}"
+}
+
+# --- Build Configuration ---
+# Standard compiler and linker flags for the ARMv5TE target.
+STOCK_FFP_CFLAGS="-I$CPREFIX/include -O2 -march=armv5te -mtune=arm926ej-s -msoft-float -fomit-frame-pointer -ffunction-sections -fdata-sections"
+STOCK_FFP_LDFLAGS="-L$CPREFIX/lib -Wl,-rpath,$CPREFIX/lib -Wl,--as-needed -Wl,--gc-sections"
+# Use user-provided flags if set, otherwise use the stock flags.
+export FFP_CFLAGS="${FFP_CFLAGS:-$STOCK_FFP_CFLAGS}"
+export FFP_LDFLAGS="${FFP_LDFLAGS:-$STOCK_FFP_LDFLAGS}"
+export FFP_CXXFLAGS="${FFP_CXXFLAGS:-$FFP_CFLAGS}"
+
+# Initialize the main log file path and create all directories.
+MAIN_LOG="$DIR_LOGS/$(timestamp)-main.log"
+mkpaths
+
+# --- Package-Specific Functions ---
+
+# Initialize global variables for the current package's directories and paths.
+init_pkg_dirs() {
+    # X: Package definition directory
+    X="$DIR_DEFINITIONS/$PN"
+    # W: Base work directory for this package and version
+    W="$DIR_WORK/$PN/$PV/$PR"
+    # D: Directory where the package will be installed (fake root)
+    D="$W/pkg"
+    # E: Source extraction directory. Use custom dir_E if defined, else default to $PN-$PV.
+    if [[ -f "$X/dir_E" ]]; then
+        . "$X/dir_E" # Source the file to set $E
+    else
+        E="$W/$PN-$PV"
+    fi
+    # DIR_DIST: Symlinks to cached distfiles for this build
+    DIR_DIST="$DIR_WORK/$PN/$PV/distdir"
+    # F: Final destination directory for the built .txz package
+    F="$DIR_DEST/$PN"
+    # Create the necessary directories
+    mkdir -p "$DIR_DIST" "$D" "$F"
+    # PKG_LOG: Dedicated log file for this specific package build
+    PKG_LOG="$DIR_LOGS/$(timestamp)-${PN}-${PV}-${PR}.log"
+    # Export all these variables so they are available to subscripts and functions.
+    export X W D E DIR_DIST F PKG_LOG
+    log DEBUG "Initialized paths for $PN: E=$E, D=$D"
+}
+
+# Safely remove the package's work directory if it exists.
+clean_W() {
+    if [[ -d "$W" ]]; then
+        log INFO "Cleaning previous build directory: $W"
+        rm -rf "$W"
+    fi
+}
+
+# Copy package metadata files (DESCR, HOMEPAGE) and post-install script to the install directory.
+copy_install_meta() {
+    mkdir -p "$D/install"
+    local meta_file
+    for meta_file in DESCR HOMEPAGE doinst.sh; do
+        if [[ -f "$X/$meta_file" ]]; then
+            cp -v "$X/$meta_file" "$D/install/" >> "$PKG_LOG" 2>&1
+        fi
+    done
+}
+
+# Recursively copy the custom 'ffp' directory from the package definition to the install directory.
+copy_ffp_tree() {
+    if [[ -d "$X/ffp" ]]; then
+        log DEBUG "Copying custom ffp tree from $X/ffp to $D/ffp"
+        mkdir -p "$D/ffp"
+        # Use rsync if available for better control, else cp
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a "$X/ffp/" "$D/ffp/" >> "$PKG_LOG" 2>&1
+        else
+            cp -Rf "$X/ffp/"* "$D/ffp/" 2>/dev/null || true
+        fi
+    fi
+}
+
+# Execute a custom hook script before or after a build step if it exists.
+run_step_hook() {
+    local step="$1"   # e.g., 'pre', 'post'
+    local action="$2" # e.g., 'configure', 'make'
+    local hook="$X/command_${step}_${action}"
+
+    if [[ -f "$hook" ]]; then
+        log INFO "Executing $step-$action hook: $hook"
+        chmod +x "$hook"
+        # Execute the hook in a subshell, logging all output.
+        (
+            set +e # Don't let the hook kill the main script
+            cd "$E" # Run from the source directory by convention
+            "$hook" 2>&1
+        ) | tee -a "$PKG_LOG"
+        local hook_retval="${PIPESTATUS[0]}"
+        if [[ $hook_retval -ne 0 ]]; then
+            log WARN "Hook $hook exited with status $hook_retval"
+            return $hook_retval
+        fi
+    fi
+    return 0
+}
+
+# Download source files listed in SRC_URI if they are not already in the cache.
+download_distfile() {
+    if [[ "$(ls -1 "$DIR_DIST" 2>/dev/null | wc -l)" -eq 0 ]]; then
+        run_step_hook pre download_distfile
+        [[ -n "${SRC_URI:-}" ]] || die "SRC_URI is not defined for package $PN."
+
+        mkdir -p "$DIR_DIST" "$DISTFILES_CACHE"
+        local url fname cache_file
+
+        for url in $SRC_URI; do
+            # Extract the filename from the URL.
+            fname="$(basename "$url")"
+            cache_file="$DISTFILES_CACHE/$fname"
+
+            if [[ ! -f "$cache_file" ]]; then
+                log INFO "Downloading: $url"
+                if ! wget --no-check-certificate --progress=bar:force --tries=3 --timeout=30 -O "${cache_file}.part" "$url"; then
+                    rm -f "${cache_file}.part"
+                    die "Failed to download $url"
+                fi
+                # Atomic move to final location after successful download.
+                mv "${cache_file}.part" "$cache_file"
+            else
+                log INFO "Using cached file: $fname"
+            fi
+            # Create a symlink in the build's distdir to the cached file.
+            ln -sf "$cache_file" "$DIR_DIST/$fname"
+        done
+        run_step_hook post download_distfile
+    else
+        log INFO "Using previously downloaded distfiles for $PN-$PV"
+    fi
+}
+
+# Unpack all source archives in the distdir to the work directory.
+unpack_distfile() {
+    mkdir -p "$W"
+    cd "$W"
+    local fp
+    # Loop through all files in the distdir
+    for fp in "$DIR_DIST"/*; do
+        # Skip if it's not a regular file (e.g., a broken symlink from a previous failed download)
+        [[ -f "$fp" ]] || continue
+        log INFO "Unpacking: $(basename "$fp")"
+        case "$fp" in
+            *.zip)
+                unzip -q "$fp" >> "$PKG_LOG" 2>&1
+                ;;
+            *.tar.gz | *.tgz)
+                tar -xzf "$fp" >> "$PKG_LOG" 2>&1
+                ;;
+            *.tar.bz2 | *.tbz)
+                tar -xjf "$fp" >> "$PKG_LOG" 2>&1
+                ;;
+            *.tar.xz | *.txz)
+                tar -xJf "$fp" >> "$PKG_LOG" 2>&1
+                ;;
+            *.tar)
+                tar -xf "$fp" >> "$PKG_LOG" 2>&1
+                ;;
+            *.gz)
+                gunzip -c "$fp" > "$(basename "$fp" .gz)" >> "$PKG_LOG" 2>&1
+                ;;
+            # Add more archive types if necessary
+            *)
+                log WARN "Cannot unpack unknown file type: $fp. Copying instead."
+                cp "$fp" ./
+                ;;
+        esac
+    done
+}
+
+# Apply custom patches to the extracted source code.
+run_patch() {
+    if [[ -f "$X/command_patch" ]]; then
+        log INFO "Applying patches"
+        cd "$E"
+        chmod +x "$X/command_patch"
+        "$X/command_patch" 2>&1 | tee -a "$PKG_LOG"
+    fi
+}
+
+# Run the configure script with the appropriate cross-compilation flags.
+run_configure() {
+    [[ -f "$E/configure" ]] || { log INFO "No configure script found, skipping."; return 0; }
+    cd "$E"
+    run_step_hook pre configure
+    log INFO "Running configure: $CONFIGURE_ARGS"
+    # Execute configure with the FFP environment flags.
+    env CFLAGS="$FFP_CFLAGS" CXXFLAGS="$FFP_CXXFLAGS" LDFLAGS="$FFP_LDFLAGS" \
+        ./configure $CONFIGURE_ARGS 2>&1 | tee -a "$PKG_LOG"
+    local configure_retval="${PIPESTATUS[0]}"
+    run_step_hook post configure
+    return $configure_retval
+}
+
+# Compile the source code using make.
+run_make() {
+    cd "$E"
+    run_step_hook pre make
+    log INFO "Running make with $MAKE_JOBS jobs"
+    make -j"$MAKE_JOBS" 2>&1 | tee -a "$PKG_LOG"
+    local make_retval="${PIPESTATUS[0]}"
+    run_step_hook post make
+    return $make_retval
+}
+
+# Install the compiled software into the fake root directory ($D).
+run_make_install() {
+    cd "$E"
+    run_step_hook pre make_install
+    log INFO "Running make install into DESTDIR=$D"
+    make DESTDIR="$D" install 2>&1 | tee -a "$PKG_LOG"
+    local make_install_retval="${PIPESTATUS[0]}"
+    run_step_hook post make_install
+    return $make_install_retval
+}
+
+# Create the FFP package (.txz file) from the installed files.
+run_makepkg() {
+    cd "$D"
+    run_step_hook pre makepkg
+    log INFO "Creating package with makepkg"
+    # Use the system's makepkg to create the package.
+    PKGDIR="$F" "$CPREFIX/sbin/makepkg" "$PN" "$PV" "$PR" 2>&1 | tee -a "$PKG_LOG"
+    local makepkg_retval="${PIPESTATUS[0]}"
+
+    # Find the generated package file.
+    PACKAGELOCATION="$(ls -1 "$F/$PN-$PV-"*-"$PR.txz" 2>/dev/null | head -n1)"
+    if [[ $makepkg_retval -ne 0 || -z "$PACKAGELOCATION" ]]; then
+        die "makepkg failed or did not create a package for $PN-$PV-$PR"
+    fi
+    run_step_hook post makepkg
+    log INFO "Package built successfully: $(basename "$PACKAGELOCATION")"
+}
+
+# Copy the newly built package to the structured release directory.
+copy_new_package() {
+    local release_pkg_dir="$DIR_RELEASE/$FFPVERSION/$FFP_ARCH/packages"
+    mkdir -p "$release_pkg_dir"
+    if [[ -f "$PACKAGELOCATION" ]]; then
+        cp -v "$PACKAGELOCATION" "$release_pkg_dir/" >> "$PKG_LOG" 2>&1
+    else
+        warn "Package file not found for copying: $PACKAGELOCATION"
+    fi
+}
+
+# Generate checksums and a package list for the release directory.
+make_release() {
+    local release_dir="$DIR_RELEASE/$FFPVERSION/$FFP_ARCH/packages"
+    [[ -d "$release_dir" ]] || { log WARN "Release directory $release_dir does not exist."; return 1; }
+    cd "$release_dir"
+    log INFO "Generating CHECKSUMS.md5 and PACKAGES.txt in $release_dir"
+    /ffp/bin/md5sum *.txz > CHECKSUMS.md5 2>/dev/null || true
+    ls -1 *.txz > PACKAGES.txt 2>/dev/null || true
+}
+
+# Sync the release directory to a remote or local repository.
+publish_release() {
+    make_release
+    # Execute a custom sync script if provided.
+    if [[ -x "$DIR_CONFIG/rsynctorepository.sh" ]]; then
+        log INFO "Executing repository sync script"
+        "$DIR_CONFIG/rsynctorepository.sh"
+    fi
+    # Copy packages to the local FFP packages directory if configured.
+    if [[ -n "$REPO_SYNC_DIR" && -d "$REPO_SYNC_DIR" ]]; then
+        log INFO "Copying new packages to $REPO_SYNC_DIR"
+        cp -v "$DIR_RELEASE/$FFPVERSION/$FFP_ARCH/packages/"*.txz "$REPO_SYNC_DIR/" || true
+    fi
+}
+
+# --- Package Information and Listing Functions ---
+
+# Print a report of all available packages and their versions.
+versions_report() {
+    printf "%-20s %-12s %-6s %s\n" "PACKAGE" "VERSION" "REV" "HOMEPAGE"
+    printf "================================================================================\n"
+    local dir_name pkg_path homepage
+    # Find all directories in definitions, excluding templates.
+    for dir_name in $(find "$DIR_DEFINITIONS" -maxdepth 1 -mindepth 1 -type d -not -name '*_template' -exec basename {} \; | sort); do
+        pkg_path="$DIR_DEFINITIONS/$dir_name"
+        # Try to source the funpkg file to get PN, PV, PR.
+        if [[ -f "$pkg_path/funpkg" ]]; then
+            ( . "$pkg_path/funpkg" >/dev/null 2>&1
+              homepage=""
+              [[ -f "$pkg_path/HOMEPAGE" ]] && homepage="$(head -n1 "$pkg_path/HOMEPAGE" 2>/dev/null | tr -d '\r\n')"
+              printf "%-20s %-12s %-6s %s\n" "$PN" "$PV" "$PR" "$homepage"
+            ) || printf "%-20s %-12s %-6s %s\n" "$dir_name" "ERROR" "?" "Failed to read funpkg"
+        else
+            printf "%-20s %-12s %-6s %s\n" "$dir_name" "?" "?" "No funpkg file"
+        fi
+    done
+}
+
+# Display detailed information about a specific package.
+show_pkg_info() {
+    local pkgname="$1"
+    local dpath="$DIR_DEFINITIONS/$pkgname"
+    [[ -d "$dpath" ]] || die "Package definition directory not found: $pkgname"
+
+    # Source the package variables. Try 'funpkg' first, then '$pkgname.funpkg'.
+    if [[ -f "$dpath/funpkg" ]]; then
+        . "$dpath/funpkg"
+    elif [[ -f "$dpath/$pkgname.funpkg" ]]; then
+        . "$dpath/$pkgname.funpkg"
+    else
+        die "No funpkg file found in $dpath"
+    fi
+
+    echo "${YELLOW}${BOLD}Package Information: $PN${RESET}"
+    echo "${BLUE}Name:${RESET}        ${GREEN}$PN${RESET}"
+    echo "${BLUE}Version:${RESET}     ${GREEN}$PV${RESET}"
+    echo "${BLUE}Revision:${RESET}    ${GREEN}$PR${RESET}"
+
+    if [[ -f "$dpath/HOMEPAGE" ]]; then
+        HOMEPAGE=$(cat "$dpath/HOMEPAGE")
+        echo "${BLUE}Homepage:${RESET}    ${GREEN}$HOMEPAGE${RESET}"
+    fi
+
+    if [[ -n "${SRC_URI:-}" ]]; then
+        echo "${BLUE}Source(s):${RESET}   ${GREEN}$SRC_URI${RESET}"
+    fi
+
+    if [[ -n "${CONFIGURE_ARGS:-}" ]]; then
+        echo "${BLUE}Configure Args:${RESET}"
+        echo "  ${GREEN}$CONFIGURE_ARGS${RESET}"
+    fi
+
+    if [[ -f "$dpath/DESCR" ]]; then
+        echo "${BLUE}Description:${RESET}"
+        cat "$dpath/DESCR" | sed 's/^/  /'
+    fi
+}
+
+# --- Main Build Pipeline ---
+
+# Execute the complete build process for a single package.
+build_pipeline() {
+    log INFO "Starting build pipeline for ${PN}-${PV}-${PR}"
+    # Initialize all directory paths for this package.
+    init_pkg_dirs
+    # Clean any previous build attempt.
+    clean_W
+    # Re-initialize directories after cleaning.
+    init_pkg_dirs
+
+    # Execute each build step in sequence.
+    download_distfile
+    unpack_distfile
+    run_patch
+    run_configure
+    run_make
+    run_make_install
+    copy_install_meta
+    copy_ffp_tree
+    run_makepkg
+    copy_new_package
+
+    log INFO "Build pipeline completed successfully for ${PN}-${PV}-${PR}"
+}
+
+# --- CLI Argument Parsing and Help ---
+
+# Display usage information for the script.
+print_help() {
+    echo "${BOLD}Usage:${RESET} $0 [OPTIONS]"
+    echo ""
+    echo "${YELLOW}Build Options:${RESET}"
+    echo "  ${GREEN}-p, --package NAME${RESET}      Build only the specified package"
+    echo "  ${GREEN}-V, --pkg-version VER${RESET}   Override the package version (PV) from the command line"
+    echo "  ${GREEN}--jobs N${RESET}                Set number of parallel make jobs (default: auto-detected, $MAKE_JOBS)"
+    echo ""
+    echo "${YELLOW}Information Options:${RESET}"
+    echo "  ${GREEN}-l, --list${RESET}              List all available packages"
+    echo "  ${GREEN}-i, --info NAME${RESET}         Show detailed information about a package"
+    echo "  ${GREEN}-s, --system-info${RESET}       Show system information and FFP configuration"
+    echo "  ${GREEN}-v, --version${RESET}           Show script version and exit"
+    echo "  ${GREEN}-h, --help${RESET}              Show this help message and exit"
+    echo ""
+    echo "${YELLOW}Mode and Behavior:${RESET}"
+    echo "  ${GREEN}--publish${RESET}               Publish release after building (run sync script and copy)"
+    echo "  ${GREEN}--versions${RESET}              Print a versions report after building"
+    echo "  ${GREEN}--autoretry${RESET}             Retry failed build steps automatically (not recommended)"
+    echo "  ${GREEN}--failexit${RESET}              Exit immediately on any step failure (default behavior is strict)"
+    echo "  ${GREEN}--dry-run${RESET}               Print build steps without executing them"
+    echo ""
+    echo "Environment variables (e.g., FFP_CFLAGS, DIR_ROOT) can override defaults."
+}
+
+# --- Main Script Execution ---
+
+# Initialize variables for command line arguments.
+DO_PUBLISH=0
+DO_VERSIONS=0
+PKG_FROM_ARG=""
+OVERRIDE_VERSION=""
+PKG_INFO_ARG=""
+SHOW_SYSTEM_INFO=0
+SHOW_VERSION=0
+SHOW_HELP=0
+LIST_PACKAGES=0
+
+# Parse all command line arguments.
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v|--version)
+            SHOW_VERSION=1
+            shift
+            ;;
+        -s|--system-info)
+            SHOW_SYSTEM_INFO=1
+            shift
+            ;;
+        -p|--package)
+            PKG_FROM_ARG="$2"
+            shift 2
+            ;;
+        -V|--pkg-version)
+            OVERRIDE_VERSION="$2"
+            shift 2
+            ;;
+        -l|--list)
+            LIST_PACKAGES=1
+            shift
+            ;;
+        -i|--info)
+            PKG_INFO_ARG="$2"
+            shift 2
+            ;;
+        --publish) DO_PUBLISH=1; shift ;;
+        --versions) DO_VERSIONS=1; shift ;;
+        --jobs) MAKE_JOBS="$2"; shift 2 ;;
+        --autoretry) FFP_AUTORETRY=1; shift ;;
+        --failexit) FFP_FAILEXIT=1; shift ;;
+        --dry-run) FFP_DRYRUN=1; shift ;;
+        -h|--help) SHOW_HELP=1; shift ;;
+        *) echo "Unknown option: $1"; print_help; exit 1 ;;
+    esac
+done
+
+# Handle information commands that don't require full initialization
+if [[ $SHOW_VERSION -eq 1 ]]; then
+    echo "ffp-compiler $SCRIPT_VERSION"
+    echo "$SCRIPT_AUTHOR"
+    echo "$SCRIPT_CONTACT"
+    exit 0
+fi
+
+if [[ $SHOW_HELP -eq 1 ]]; then
+    print_help
+    exit 0
+fi
+
+if [[ $LIST_PACKAGES -eq 1 ]]; then
+    echo "${YELLOW}Available package definitions:${RESET}"
+    find "$DIR_DEFINITIONS" -maxdepth 1 -mindepth 1 -type d -not -name '*_template' -exec basename {} \; | sort
+    exit 0
+fi
+
+if [[ -n "$PKG_INFO_ARG" ]]; then
+    show_pkg_info "$PKG_INFO_ARG"
+    exit 0
+fi
+
+# Ensure required tools are installed and FFP environment is detected for remaining commands
+require_tools
+detect_ffp_env
+
+# Handle system info command after environment detection
+if [[ $SHOW_SYSTEM_INFO -eq 1 ]]; then
+    show_system_info
+    exit 0
+fi
+
+# Log the start of the script execution (for build commands)
+log INFO "Starting ffp-compiler $SCRIPT_VERSION"
+
+# Export the make flags for parallel building.
+export MAKEFLAGS="-j$MAKE_JOBS"
+
+# Main execution logic: Build a specific package or run interactively.
+if [[ -n "$PKG_FROM_ARG" ]] || [[ "$FFP_AUTOMODE" == "1" ]]; then
+    # Determine which package to build
+    local pkg_to_build="${PKG_FROM_ARG:-}"
+    PKG_DIR="$DIR_DEFINITIONS/$pkg_to_build"
+    [[ -d "$PKG_DIR" ]] || die "Package definition directory not found: $PKG_DIR"
+
+    # Source the package's funpkg file to load PN, PV, PR, etc.
+    if [[ -f "$PKG_DIR/funpkg" ]]; then
+        . "$PKG_DIR/funpkg"
+    elif [[ -f "$PKG_DIR/$pkg_to_build.funpkg" ]]; then
+        . "$PKG_DIR/$pkg_to_build.funpkg"
+    else
+        die "No funpkg file found in $PKG_DIR"
+    fi
+
+    # Apply version override from command line if provided.
+    if [[ -n "$OVERRIDE_VERSION" ]]; then
+        PV="$OVERRIDE_VERSION"
+        log INFO "Overriding version: PV is now $PV"
+    fi
+
+    # Execute the build or dry-run.
+    if [[ "$FFP_DRYRUN" -eq 1 ]]; then
+        log INFO "${BOLD}DRY RUN: Would build package $PN-$PV-$PR${RESET}"
+        log INFO "Steps: init -> clean -> download -> unpack -> patch -> configure -> make -> make_install -> makepkg -> copy"
+    else
+        build_pipeline
+    fi
+
+    # Execute post-build actions based on flags.
+    if [[ "$DO_PUBLISH" -eq 1 && "$FFP_DRYRUN" -ne 1 ]]; then
+        publish_release
+    fi
+    if [[ "$DO_VERSIONS" -eq 1 ]]; then
+        versions_report
+    fi
+    log INFO "Build process finished."
+    exit 0
+
+else
+    # Interactive mode: Let the user select a package from a menu.
+    echo "${BOLD}Select a package to compile:${RESET}"
+    select PKG_CHOICE in '--> SKIP THIS' $(find "$DIR_DEFINITIONS" -maxdepth 1 -mindepth 1 -type d -not -name '*_template' -exec basename {} \; | sort); do
+        [[ "$PKG_CHOICE" == "--> SKIP THIS" ]] && break
+        [[ -n "$PKG_CHOICE" ]] || { echo "Invalid selection. Try again."; continue; }
+
+        PKG_DIR="$DIR_DEFINITIONS/$PKG_CHOICE"
+        cd "$PKG_DIR"
+        if [[ -f "./funpkg" ]]; then
+            . "./funpkg"
+        elif [[ -f "./$PKG_CHOICE.funpkg" ]]; then
+            . "./$PKG_CHOICE.funpkg"
+        else
+            die "No funpkg file found in $PKG_DIR"
+        fi
+        build_pipeline
+        break
+    done
+
+    # Interactive post-build menus.
+    echo ""
+    echo "${BOLD}Publish the newly built packages?${RESET}"
+    select yn in Yes No; do
+        case $yn in
+            Yes) publish_release ;;
+            No)  ;;
+        esac
+        break
+    done
+
+    echo ""
+    echo "${BOLD}Show a versions report?${RESET}"
+    select yn in Yes No; do
+        case $yn in
+            Yes) versions_report ;;
+            No)  ;;
+        esac
+        break
+    done
+fi
+
+log INFO "ffp-compiler execution complete."

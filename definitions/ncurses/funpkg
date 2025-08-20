@@ -1,0 +1,40 @@
+#!/ffp/bin/sh
+# ==============================================================================
+# FFP Package Definition: ncurses
+# ==============================================================================
+
+# Package metadata
+export PN="ncurses"
+export PV="6.5"
+export PR="1"
+
+# Source URI - using the current/stable version
+export SRC_URI="https://invisible-island.net/archives/ncurses/current/ncurses.tar.gz"
+
+# Configure arguments optimized for FFP/ARM
+export CONFIGURE_ARGS="
+    --prefix=/ffp
+    --build=arm-ffp-linux-uclibcgnueabi
+    --target=arm-ffp-linux-uclibcgnueabi
+    --with-shared
+    --with-cxx-shared
+    --enable-warnings
+    --without-ada
+    --without-debug
+    --with-pkg-config
+    --enable-pc-files
+    --enable-widec
+    --without-tests
+    --disable-overwrite
+    --enable-rpath
+    --with-termlib
+    --enable-symlinks
+    --disable-stripping
+"
+
+# Custom extraction directory override (if needed for snapshots)
+# Leave commented for stable releases
+# E="$W/ncurses-snapshots-$(basename $SRC_URI .tar.gz | cut -d- -f3-)"
+
+
+export COMMANDS="func_init_pkg_work_dir func_patch func_configure func_make func_make_install func_dir_ffp func_dir_install func_makepkg"

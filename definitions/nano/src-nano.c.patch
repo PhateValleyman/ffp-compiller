@@ -1,0 +1,31 @@
+--- nano-8.0/src/nano.c	2024-05-01 10:25:05.000000000 +0200
++++ nano-8.0.mod/src/nano.c	2024-06-25 16:00:33.860432325 +0200
+@@ -658,15 +658,15 @@
+ void version(void)
+ {
+ #ifdef REVISION
+-	printf(" GNU nano from git, %s\n", REVISION);
++	printf("nano r%s\n", REVISION);
+ #else
+-	printf(_(" GNU nano, version %s\n"), VERSION);
++	printf(_("nano v%s\n"), VERSION);
+ #endif
+ #ifndef NANO_TINY
+ 	/* TRANSLATORS: The %s is the year of the latest release. */
+-	printf(_(" (C) %s the Free Software Foundation and various contributors\n"), "2024");
++	printf(_("by PhateValleyman\nJonas.Ned@outlook.com\n"));
+ #endif
+-	printf(_(" Compiled options:"));
++	printf(_("Compiled options:"));
+ 
+ #ifdef NANO_TINY
+ 	printf(" --enable-tiny");
+@@ -2586,7 +2586,7 @@
+ #ifdef ENABLE_HELP
+ 	if (*openfile->filename == '\0' && openfile->totsize == 0 &&
+ 				openfile->next == openfile && !ISSET(NO_HELP) && NOTREBOUND)
+-		statusbar(_("Welcome to nano.  For basic help, type Ctrl+G."));
++		statusbar(_("by PhateValleyman <Jonas.Ned@outlook.com> CTRL+G for help."));
+ #endif
+ 
+ #ifdef ENABLE_LINENUMBERS

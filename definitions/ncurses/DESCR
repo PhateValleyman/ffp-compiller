@@ -1,0 +1,21 @@
+ncurses (new curses library)
+
+Ncurses (new curses) is a programming library that provides an API which 
+allows the programmer to write text-based user interfaces in a terminal-
+independent manner. It is a toolkit for developing GUI-like application 
+software that runs under a terminal emulator. It also optimizes screen 
+changes, in order to reduce the latency experienced when using remote shells.
+
+The ncurses library is a free software emulation of curses in System V 
+Release 4.0 (SVr4), and more. It uses terminfo format, supports pads and 
+color and multiple highlights and forms characters and function-key mapping, 
+and has all the other SVr4-curses enhancements over BSD curses. SVr4 curses 
+is better known today as X/Open Curses.
+
+This package includes both wide-character and regular ncurses libraries,
+with compatibility symlinks for legacy applications.
+
+License: MIT-style
+Version: 6.5
+Homepage: https://invisible-island.net/ncurses/
+Dependencies: uClibc, uClibc-solibs
